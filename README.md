@@ -14,7 +14,7 @@
 ## 安装
 
 ```bash
-git clone git@github.com:ExLei/omp-codegraph.git
+git clone git@github.com:ExLei/omp-extension-codegraph.git
 cd omp-codegraph && ./install.sh
 # 重启 omp 会话（扩展在进程启动时加载）
 ```
@@ -29,7 +29,7 @@ cd omp-codegraph && ./update.sh
 
 ```bash
 crontab -e
-# 0 9 * * 1 cd /home/ExLei/dev/omp-codegraph && ./update.sh >> /tmp/omp-codegraph-update.log 2>&1
+# 0 9 * * 1 cd /home/ExLei/dev/omp-extension-codegraph && ./update.sh >> /tmp/omp-codegraph-update.log 2>&1
 ```
 
 ## 行为约定
