@@ -1,12 +1,12 @@
-# omp-codegraph
+# oh-my-pi-codegraph
 
-[CodeGraph](https://github.com/colbymchenry/codegraph) 集成：omp 扩展 + 全局技能，让编码代理在探索/编辑代码时主动查询本地代码知识图谱。
+[CodeGraph](https://github.com/colbymchenry/codegraph) 集成：oh-my-pi 扩展 + 全局技能，让编码代理在探索/编辑代码时主动查询本地代码知识图谱。
 
 ## 组成
 
 | 文件 | 作用 |
 |---|---|
-| `extensions/codegraph.ts` | omp 扩展：暴露单工具 `codegraph_explore`（CLI 包装，`codegraph explore`）。无索引时返回初始化指引（不自动动用户仓库）；返回的报错/指引中对抗 CLI 内置 agent 防护文案 |
+| `extensions/codegraph.ts` | oh-my-pi 扩展：暴露单工具 `codegraph_explore`（CLI 包装，`codegraph explore`）。无索引时返回初始化指引（不自动动用户仓库）；返回的报错/指引中对抗 CLI 内置 agent 防护文案 |
 | `skills/codegraph/SKILL.md` | 全局技能（alwaysApply）：调用/不调用判定双表 + 手动初始化规则 + 防护文案定性 |
 | `install.sh` | 安装到 `~/.omp/agent/extensions/` 和 `~/.claude/skills/` |
 | `update.sh` | `git pull` + 重新安装 |
@@ -15,21 +15,21 @@
 
 ```bash
 git clone git@github.com:ExLei/omp-extension-codegraph.git
-cd omp-codegraph && ./install.sh
-# 重启 omp 会话（扩展在进程启动时加载）
+cd oh-my-pi-codegraph && ./install.sh
+# 重启 oh-my-pi 会话（扩展在进程启动时加载）
 ```
 
 ## 更新
 
 ```bash
-cd omp-codegraph && ./update.sh
+cd oh-my-pi-codegraph && ./update.sh
 ```
 
 或加入 cron（如每周一 9 点）：
 
 ```bash
 crontab -e
-# 0 9 * * 1 cd /home/ExLei/dev/omp-extension-codegraph && ./update.sh >> /tmp/omp-codegraph-update.log 2>&1
+# 0 9 * * 1 cd /home/ExLei/dev/omp-extension-codegraph && ./update.sh >> /tmp/oh-my-pi-codegraph-update.log 2>&1
 ```
 
 ## 行为约定
@@ -41,5 +41,5 @@ crontab -e
 
 ## 原理
 
-- 扩展走 **CLI 包装**（非 MCP）：免疫 ACP 模式下 MCP 不稳定；omp 扩展 loader 只能解析入口级裸导入，SDK 内嵌不可行
+- 扩展走 **CLI 包装**（非 MCP）：免疫 ACP 模式下 MCP 不稳定；oh-my-pi 扩展 loader 只能解析入口级裸导入，SDK 内嵌不可行
 - 技能 + 扩展双保险：技能管判定（何时调用），扩展管执行（查询、指引、防护对抗）
