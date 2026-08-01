@@ -15,14 +15,14 @@
 
 ```bash
 git clone git@github.com:ExLei/omp-extension-codegraph.git
-cd oh-my-pi-codegraph && ./install.sh
+cd omp-extension-codegraph && ./install.sh
 # 重启 oh-my-pi 会话（扩展在进程启动时加载）
 ```
 
 ## 更新
 
 ```bash
-cd oh-my-pi-codegraph && ./update.sh
+cd omp-extension-codegraph && ./update.sh
 ```
 
 或加入 cron（如每周一 9 点）：

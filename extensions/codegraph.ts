@@ -27,8 +27,10 @@ async function run(args: string[], cwd: string, timeoutMs = 90_000): Promise<str
       maxBuffer: 64 * 1024 * 1024,
     });
     return (stdout || stderr).trim();
-  } catch (e: any) {
-    const detail = e?.stdout || e?.stderr || e?.message || String(e);
+  } catch (e: unknown) {
+    // execFile errors carry stdout/stderr fields not typed on Error
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    const detail = err.stdout || err.stderr || err.message || String(e);
     throw new Error(`codegraph ${args.join(" ")} failed: ${String(detail).slice(0, 3000)}`);
   }
 }

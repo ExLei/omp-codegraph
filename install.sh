@@ -4,6 +4,10 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
+for f in "$SRC/extensions/codegraph.ts" "$SRC/skills/codegraph/SKILL.md"; do
+  test -f "$f" || { echo "Missing: $f (run install.sh from the repo root)" >&2; exit 1; }
+done
+
 mkdir -p "$HOME/.omp/agent/extensions"
 mkdir -p "$HOME/.claude/skills/codegraph"
 
