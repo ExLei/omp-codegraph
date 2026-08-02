@@ -4,20 +4,26 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
-# 1) codegraph CLI (npm global, user-local prefix — no sudo needed)
+# 1) codegraph CLI — official self-contained installer first (no Node needed),
+#    npm as fallback when curl is unavailable or the download fails.
 if command -v codegraph >/dev/null 2>&1; then
   CG_VER="$(codegraph --version 2>/dev/null || echo '?')"
   echo "codegraph CLI: $(command -v codegraph) (v${CG_VER})"
 else
-  echo "codegraph CLI not found — installing via npm (prefix ~/.local)..."
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "ERROR: npm not found. Install Node.js first." >&2
+  echo "codegraph CLI not found — installing..."
+  CG_INSTALLER="https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh"
+  if command -v curl >/dev/null 2>&1 && curl -fsSL "$CG_INSTALLER" | sh; then
+    echo "Installed via official self-contained installer (bundle in ~/.codegraph, launcher in ~/.local/bin)."
+  elif command -v npm >/dev/null 2>&1; then
+    echo "curl installer unavailable/failed — falling back to npm (prefix ~/.local)..."
+    npm install -g --prefix "$HOME/.local" @colbymchenry/codegraph
+  else
+    echo "ERROR: neither curl nor npm available. Install curl (or Node.js for npm) first." >&2
     exit 1
   fi
-  npm install -g --prefix "$HOME/.local" @colbymchenry/codegraph
   if ! command -v codegraph >/dev/null 2>&1; then
     echo "ERROR: codegraph still not on PATH after install." >&2
-    echo "       Add ~/.local/bin to PATH (it holds npm global binaries)." >&2
+    echo "       Add ~/.local/bin to PATH (both install paths symlink codegraph there)." >&2
     exit 1
   fi
   echo "codegraph CLI installed: $(command -v codegraph) (v$(codegraph --version 2>/dev/null))"
