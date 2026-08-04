@@ -14,22 +14,22 @@
 ## 安装
 
 ```bash
-git clone git@github.com:ExLei/omp-extension-codegraph.git
-cd omp-extension-codegraph && ./install.sh
+git clone git@github.com:ExLei/omp-codegraph.git
+cd omp-codegraph && ./install.sh
 # 重启 oh-my-pi 会话（扩展在进程启动时加载）
 ```
 
 ## 更新
 
 ```bash
-cd omp-extension-codegraph && ./update.sh
+cd omp-codegraph && ./update.sh
 ```
 
 或加入 cron（如每周一 9 点）：
 
 ```bash
 crontab -e
-# 0 9 * * 1 cd /home/ExLei/dev/omp-extension-codegraph && ./update.sh >> /tmp/oh-my-pi-codegraph-update.log 2>&1
+# 0 9 * * 1 cd /home/ExLei/dev/omp-codegraph && ./update.sh >> /tmp/oh-my-pi-codegraph-update.log 2>&1
 ```
 
 ## 行为约定
