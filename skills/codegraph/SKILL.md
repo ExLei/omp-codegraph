@@ -10,6 +10,14 @@ description: 当需要探索、理解、概述或修改任何代码库时使用�
 
 `codegraph_explore` 查询本地代码知识图谱（`.codegraph/` 索引），返回：相关符号及逐字源码、调用路径、影响范围（调用方/导入方/测试）、覆盖标注。
 
+<EXTREMELY-IMPORTANT>
+如果你认为哪怕只有 1% 的可能性需要探索、理解、定位或修改代码库——**你必须先调用 `codegraph_explore`**，或在该工具不可用时用 `bash: codegraph explore "<查询>"`。
+
+**判定命中时必须调用，不可协商。** 你不能通过合理化来逃避。这适用于主代理与工作流子代理（omp 动态编排子代理会话已预载 `codegraph_explore` 工具，经扩展注入；若工具缺失则用 CLI 回退，输出相同）。
+
+**在调用 `codegraph_explore` 之前，不要先用 read/grep/glob 去"看看"。** 顺序必须是：先知识图谱建立结构认知，再 read/grep 验证细节。反过来的顺序会漏掉跨文件调用链。
+</EXTREMELY-IMPORTANT>
+
 ## 调用判定
 
 **read 答不了，须用`codegraph_explore` 工具**：
