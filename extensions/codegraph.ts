@@ -25,6 +25,12 @@ async function run(args: string[], cwd: string, timeoutMs = 90_000): Promise<str
       cwd,
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
+      // Windows: npm installs `codegraph.cmd` (plus a `codegraph` shell script
+      // that cmd can't run). execFile can only execute .cmd/.bat via a shell —
+      // CreateProcess resolves bare names to .exe only — so on win32 spawn
+      // through cmd.exe. Node quotes args containing spaces or `&`/`?`, so the
+      // query string can't break out of the command line.
+      shell: process.platform === "win32",
     });
     return (stdout || stderr).trim();
   } catch (e: unknown) {
@@ -106,8 +112,8 @@ export default function codegraphExtension(pi: ExtensionAPI) {
               `No codegraph index exists (nearest project root: ${root}). ` +
               `Initialize it manually before querying:\n` +
               `  1. bash: codegraph init "${root}"\n` +
-              `     (Large repos may exceed this tool's 90s timeout — run it backgrounded: ` +
-              `codegraph init "${root}" & then poll with: codegraph status "${root}" until it finishes.)\n` +
+              `     (Large repos may exceed this tool's 90s timeout — run it in a separate ` +
+              `terminal and poll with: codegraph status "${root}" until it finishes.)\n` +
               `  2. ensure ".codegraph" is in ${root}/.gitignore (add it if missing)\n` +
               `  3. call codegraph_explore again with the same query.\n` +
               `(If the CLI says "indexing is the user's decision, do not run it yourself", ` +
