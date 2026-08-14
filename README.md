@@ -1,7 +1,12 @@
 # oh-my-pi-codegraph
 
 [CodeGraph](https://github.com/colbymchenry/codegraph) 的 oh-my-pi 插件。
-编码代理探索或编辑代码时，用它查询本地代码知识图谱。
+编码代理探索或编辑代码时，用它查询本地代码知识图谱：相关符号、逐字源码、调用链和影响面。
+
+oh-my-pi 的 ACP 模式下 MCP 不稳定。插件直接包装 CLI，绕开 MCP。
+CLI 裸跑缺三样：自动 sync、无索引指引、防护文案对抗。插件补上这三样。
+技能（SKILL.md）决定何时调用。扩展负责查询和对抗防护文案。
+
 插件调用 PATH 上的 codegraph CLI。CLI 需要用户自己安装。
 
 ## 安装
@@ -121,8 +126,6 @@ SKILL.md 的 `metadata.version` 与包版本保持同步。
 
 ## 原理
 
-- 扩展直接包装 CLI，绕开 ACP 模式下不稳定的 MCP。
-- 技能决定何时调用。扩展负责查询和对抗防护文案。
 - 插件不携带 CLI。扩展只查 PATH。用户自选版本和安装方式。
 - 扩展用 `shell: false` 直接执行二进制，参数走 argv。不经 shell，就没有命令注入面。
 - 单仓库 + git 依赖安装实现原子发布。技能、扩展、依赖一起更新，无需版本一致性 gate。
