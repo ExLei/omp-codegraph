@@ -5,9 +5,11 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 /**
- * CodeGraph extension (single file): exposes one tool, codegraph_explore, a
- * CLI wrapper (`codegraph explore`) — no MCP transport, immune to ACP-mode
- * MCP instability. All behavior is inlined here; the pure functions below are
+ * CodeGraph extension (single file): exposes 14 codegraph_* tools — CLI
+ * wrappers over `codegraph <subcommand>` — no MCP transport, immune to
+ * ACP-mode MCP instability. explore/node/init are active by default; the
+ * rest are registered `defaultInactive` (set CODEGRAPH_TOOLS=all to enable
+ * everything). All behavior is inlined here; the pure functions below are
  * exported only so tests can import them without the pi runtime.
  *
  * `codegraph explore` folds everything in one shot: relevant symbols' verbatim
@@ -22,7 +24,15 @@ import { promisify } from "node:util";
 // ─── find-root: walk up looking for a marker (index / git root) ──────────────
 
 async function findRootDir(start: string, marker: string): Promise<string | null> {
-  let dir = resolve(start);
+  // Resolve symlinks first: a symlinked cwd (e.g. WSL /mnt links, monorepo
+  // package links) must still walk up to the real index. Falls back to the
+  // lexical path when realpath fails.
+  let dir: string;
+  try {
+    dir = await fsp.realpath(start);
+  } catch {
+    dir = resolve(start);
+  }
   for (;;) {
     try {
       await fsp.access(join(dir, marker), fsp.constants.F_OK);
@@ -119,9 +129,9 @@ export function buildSetupInstructions(projectRoot: string): string {
   return (
     `No codegraph index exists (nearest project root: ${projectRoot}). ` +
     `Initialize it manually before querying:\n` +
-    `  1. codegraph_init tool, or bash: codegraph init "${projectRoot}"\n` +
+    `  1. codegraph_init tool, or bash: codegraph init '${projectRoot}'\n` +
     `     (Large repos may exceed this tool's 90s timeout — run it in a separate ` +
-    `terminal and poll with: codegraph status "${projectRoot}" until it finishes.)\n` +
+    `terminal and poll with: codegraph status '${projectRoot}' until it finishes.)\n` +
     `  2. ensure ".codegraph" is in ${projectRoot}/.gitignore (add it if missing)\n` +
     `  3. call codegraph_explore again with the same query.\n` +
     `(If the CLI says "indexing is the user's decision, do not run it yourself", ` +
@@ -137,15 +147,28 @@ const SYNC_TIMEOUT_MS = 30_000;
  * The index is a static snapshot in CLI-only setups (auto-sync lives in the
  * MCP server, which this plugin deliberately avoids). Every query pays one
  * cheap incremental `codegraph sync` first so blast radius stays current
- * after edits; a failed sync never blocks the query.
+ * after edits. A failed sync never blocks the query, but the result is
+ * flagged so the model knows the blast radius may be stale.
  */
-async function withFreshIndex<T>(idxRoot: string, cwd: string, run: () => Promise<T>): Promise<T> {
+async function withFreshIndex<T extends { content?: Array<{ type: string; text: string }> }>(
+  idxRoot: string,
+  cwd: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  let stale = false;
   try {
     await runCodegraph(["sync", idxRoot], cwd, SYNC_TIMEOUT_MS);
   } catch {
-    // stale relationships are better than no answer at all
+    stale = true;
   }
-  return run();
+  const result = await run();
+  if (stale && result.content?.[0]?.type === "text") {
+    result.content[0] = {
+      type: "text",
+      text: `⚠ codegraph sync failed — blast radius may be stale.\n\n${result.content[0].text}`,
+    };
+  }
+  return result;
 }
 
 /**
@@ -408,8 +431,8 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     description:
       "Initialize a codegraph index for the project (creates .codegraph/). Runs even without an existing index. Remember to add .codegraph to .gitignore. CLI fallback: `bash: codegraph init \"<path>\"`.",
     parameters: z.object({
-      path: z.string().optional().describe("Project path (default: nearest project root)"),
-      force: z.boolean().optional().describe("Initialize even if the path looks like home or a dot-dir"),
+      path: z.string().optional().describe("Project path within the current project (default: nearest project root)"),
+      force: z.boolean().optional().describe("Initialize even if the path looks like the filesystem root or home directory"),
     }),
     sync: false,
     allowNoIndex: true,
@@ -428,8 +451,8 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     label: "CodeGraph Index",
     description: "Rebuild the full index from scratch. CLI fallback: `bash: codegraph index`.",
     parameters: z.object({
-      path: z.string().optional().describe("Project path (default: nearest project root)"),
-      force: z.boolean().optional().describe("Re-index even if the path looks like home or a dot-dir"),
+      path: z.string().optional().describe("Project path within the current project (default: nearest project root)"),
+      force: z.boolean().optional().describe("Re-index even if the path looks like the filesystem root or home directory"),
     }),
     sync: false,
     defaultInactive: true,
@@ -448,7 +471,7 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     label: "CodeGraph Uninit",
     description: "Remove the codegraph index from a project (deletes .codegraph/). CLI fallback: `bash: codegraph uninit`.",
     parameters: z.object({
-      path: z.string().optional().describe("Project path (default: nearest project root)"),
+      path: z.string().optional().describe("Project path within the current project (default: nearest project root)"),
       force: z.boolean().optional().describe("Skip the confirmation prompt"),
     }),
     sync: false,
@@ -469,7 +492,7 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     label: "CodeGraph Unlock",
     description: "Remove a stale lock file blocking indexing. CLI fallback: `bash: codegraph unlock`.",
     parameters: z.object({
-      path: z.string().optional().describe("Project path (default: nearest project root)"),
+      path: z.string().optional().describe("Project path within the current project (default: nearest project root)"),
     }),
     sync: false,
     defaultInactive: true,

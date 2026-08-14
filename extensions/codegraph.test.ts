@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import codegraphExtension, {
@@ -10,7 +10,7 @@ import codegraphExtension, {
   runCodegraph,
 } from "./codegraph.js";
 
-const tmp = await mkdtemp(join(tmpdir(), "cg-test-"));
+const tmp = await realpath(await mkdtemp(join(tmpdir(), "cg-test-")));
 // root/.codegraph (with index db) + root/.git; deep nesting under root/sub/deeper
 await mkdir(join(tmp, "root", ".codegraph"), { recursive: true });
 await writeFile(join(tmp, "root", ".codegraph", "codegraph.db"), "");
@@ -146,13 +146,13 @@ test("runCodegraph resolves from PATH when no binary is injected", async () => {
 // ── guidance ─────────────────────────────────────────────────────────────────
 
 test("setup instructions carry the init command with the project root", () => {
-  expect(buildSetupInstructions("/repo/root")).toContain('codegraph init "/repo/root"');
+  expect(buildSetupInstructions("/repo/root")).toContain("codegraph init '/repo/root'");
 });
 
 test("setup instructions mention .gitignore and the status polling hint", () => {
   const g = buildSetupInstructions("/repo/root");
   expect(g).toContain(".gitignore");
-  expect(g).toContain('codegraph status "/repo/root"');
+  expect(g).toContain("codegraph status '/repo/root'");
 });
 
 test("setup instructions counter the CLI agent-guard boilerplate", () => {
@@ -389,4 +389,36 @@ test("CODEGRAPH_TOOLS=all activates every tool", async () => {
   } finally {
     process.env.CODEGRAPH_TOOLS = saved;
   }
+});
+
+test("findIndexRoot resolves a symlinked cwd to the real index", async () => {
+  const link = join(tmp, "link-root");
+  await symlink(join(tmp, "root"), link);
+  expect(await findIndexRoot(link)).toBe(join(tmp, "root"));
+});
+
+test("failed sync flags the result as possibly stale", async () => {
+  // 索引目录路径含 "fail" → stub 的 sync 调用失败 → 查询仍执行但带提示
+  await mkdir(join(tmp, "fail-root", ".codegraph"), { recursive: true });
+  await writeFile(join(tmp, "fail-root", ".codegraph", "codegraph.db"), "");
+  const { tools, pi } = stubPi();
+  codegraphExtension(pi);
+  await withPath(join(tmp, "bin"), async () => {
+    const r = await tools[0].execute("id", { query: "x" }, undefined, undefined, {
+      cwd: join(tmp, "fail-root"),
+    });
+    expect(r.content[0].text).toContain("⚠ codegraph sync failed — blast radius may be stale.");
+    expect(r.content[0].text).toContain("fake-output explore x");
+  });
+});
+
+test("sync and index tools execute their commands", async () => {
+  const { tools, pi } = stubPi();
+  codegraphExtension(pi);
+  await withPath(join(tmp, "bin"), async () => {
+    const r1 = await tools[9].execute("id", {}, undefined, undefined, { cwd: join(tmp, "root") });
+    expect(r1.content[0].text).toBe("fake-output sync");
+    const r2 = await tools[11].execute("id", {}, undefined, undefined, { cwd: join(tmp, "root") });
+    expect(r2.content[0].text).toBe("fake-output index " + join(tmp, "root"));
+  });
 });

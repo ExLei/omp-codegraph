@@ -8,13 +8,16 @@
 
 **1) codegraph CLI**（PATH 上已有就跳过）
 
-官方自包含安装器（独立 bundle，仅 POSIX）：
+官方自包含安装器：
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+# Windows（PowerShell）
+irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex
 ```
 
-或者全局安装：`bun add -g @colbymchenry/codegraph`，或 `npm install -g @colbymchenry/codegraph`。Windows 只有包管理器这条路（官方安装器只支持 POSIX），装完后 npm 全局 bin（`%APPDATA%\npm`）要确认在 PATH 上。
+或者全局安装：`bun add -g @colbymchenry/codegraph`，或 `npm install -g @colbymchenry/codegraph`。包管理器装完后，npm 全局 bin（Windows 为 `%APPDATA%\npm`）要确认在 PATH 上。
 
 **2) 插件**
 
@@ -40,7 +43,7 @@ omp plugin uninstall omp-codegraph
 
 插件卸载不碰索引和 CLI，想一起清掉：
 
-- CLI：按装法反着来。官方安装器装的，删掉 PATH 上的 `codegraph` 可执行文件即可；bun/npm 全局装的用 `bun remove -g @colbymchenry/codegraph` 或 `npm uninstall -g @colbymchenry/codegraph`。`codegraph uninstall` 只清各 agent（Claude Code、Cursor 等）的 MCP 配置——本插件不用 MCP，一般用不上
+- CLI：`codegraph uninstall`——默认把 agent 的 MCP 配置和 CLI 一起移除；加 `--keep-cli` 只清配置、保留 CLI。本插件不用 MCP，直接跑 `codegraph uninstall` 即可删掉 CLI（或按装法反着删：官方安装器删掉 PATH 上的 `codegraph` 可执行文件，bun/npm 全局装用 `bun remove -g @colbymchenry/codegraph` / `npm uninstall -g @colbymchenry/codegraph`）
 - 索引：手动 `rm -rf .codegraph`（项目根下）
 
 从拷贝安装时代升上来的用户，卸载前记得清旧拷贝，见下节。
