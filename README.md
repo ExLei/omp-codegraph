@@ -46,18 +46,6 @@ omp plugin uninstall omp-codegraph
 - CLI：`codegraph uninstall`——默认把 agent 的 MCP 配置和 CLI 一起移除；加 `--keep-cli` 只清配置、保留 CLI。本插件不用 MCP，直接跑 `codegraph uninstall` 即可删掉 CLI（或按装法反着删：官方安装器删掉 PATH 上的 `codegraph` 可执行文件，bun/npm 全局装用 `bun remove -g @colbymchenry/codegraph` / `npm uninstall -g @colbymchenry/codegraph`）
 - 索引：手动 `rm -rf .codegraph`（项目根下）
 
-从拷贝安装时代升上来的用户，卸载前记得清旧拷贝，见下节。
-
-## 旧版迁移（拷贝安装时代用户）
-
-早期安装方式把扩展和技能**拷贝**进用户目录。升级后旧拷贝会和插件清单双注册，手动清一次：
-
-```bash
-rm -rf ~/.claude/skills/codegraph ~/.omp/agent/extensions/codegraph.ts
-```
-
-只删本插件装出来的文件；路径下有同名用户自己的文件就跳过。
-
 ## 技能管理
 
 技能不拷贝到 `~/.claude/skills/`，由插件清单里的 `omp.skills` 声明，OMP 从清单发现并加载。

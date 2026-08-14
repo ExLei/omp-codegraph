@@ -170,11 +170,11 @@ test("explore syncs the index before querying", async () => {
     const r = await tools[0].execute("id", { query: "x" }, undefined, undefined, {
       cwd: join(tmp, "root"),
     });
-    expect(r.content[0].text).toBe("fake-output explore x");
+    expect(r.content[0].text).toBe("fake-output explore -- x");
   });
   const calls = await readCalls();
   expect(calls[calls.length - 2]).toContain("sync");
-  expect(calls[calls.length - 1]).toBe("CALL:explore x");
+  expect(calls[calls.length - 1]).toBe("CALL:explore -- x");
 });
 
 test("explore passes maxFiles through to the CLI", async () => {
@@ -186,7 +186,7 @@ test("explore passes maxFiles through to the CLI", async () => {
     });
   });
   const calls = await readCalls();
-  expect(calls[calls.length - 1]).toBe("CALL:explore x --max-files 3");
+  expect(calls[calls.length - 1]).toBe("CALL:explore --max-files=3 -- x");
 });
 
 test("codegraph_node tool runs a focused query", async () => {
@@ -212,11 +212,11 @@ test("codegraph_node tool runs a focused query", async () => {
     const r = await tools[1].execute("id", { name: "runCodegraph" }, undefined, undefined, {
       cwd: join(tmp, "root"),
     });
-    expect(r.content[0].text).toBe("fake-output node runCodegraph");
+    expect(r.content[0].text).toBe("fake-output node -- runCodegraph");
   });
   const calls = await readCalls();
   expect(calls[calls.length - 2]).toContain("sync");
-  expect(calls[calls.length - 1]).toBe("CALL:node runCodegraph");
+  expect(calls[calls.length - 1]).toBe("CALL:node -- runCodegraph");
 });
 
 test("no index returns setup instructions without syncing", async () => {
@@ -248,11 +248,11 @@ test("query tool syncs the index and passes search through", async () => {
     const r = await tools[2].execute("id", { search: "findOnPath", limit: 5 }, undefined, undefined, {
       cwd: join(tmp, "root"),
     });
-    expect(r.content[0].text).toBe("fake-output query findOnPath --limit 5");
+    expect(r.content[0].text).toBe("fake-output query --limit=5 -- findOnPath");
   });
   const calls = await readCalls();
   expect(calls[calls.length - 2]).toContain("sync");
-  expect(calls[calls.length - 1]).toBe("CALL:query findOnPath --limit 5");
+  expect(calls[calls.length - 1]).toBe("CALL:query --limit=5 -- findOnPath");
 });
 
 test("affected tool passes file list through", async () => {
@@ -262,10 +262,10 @@ test("affected tool passes file list through", async () => {
     const r = await tools[6].execute("id", { files: ["a.ts", "b.ts"] }, undefined, undefined, {
       cwd: join(tmp, "root"),
     });
-    expect(r.content[0].text).toBe("fake-output affected a.ts b.ts");
+    expect(r.content[0].text).toBe("fake-output affected -- a.ts b.ts");
   });
   const calls = await readCalls();
-  expect(calls[calls.length - 1]).toBe("CALL:affected a.ts b.ts");
+  expect(calls[calls.length - 1]).toBe("CALL:affected -- a.ts b.ts");
 });
 
 test("init tool runs without an index and never syncs", async () => {
@@ -276,10 +276,10 @@ test("init tool runs without an index and never syncs", async () => {
     const r = await tools[10].execute("id", { path: join(tmp, "other") }, undefined, undefined, {
       cwd: join(tmp, "other"),
     });
-    expect(r.content[0].text).toBe("fake-output init " + join(tmp, "other"));
+    expect(r.content[0].text).toBe("fake-output init -- " + join(tmp, "other"));
   });
   const calls = await readCalls();
-  expect(calls.slice(before)).toEqual(["CALL:init " + join(tmp, "other")]);
+  expect(calls.slice(before)).toEqual(["CALL:init -- " + join(tmp, "other")]);
 });
 
 test("uninit without an index returns a plain message", async () => {
@@ -312,10 +312,10 @@ test("init without path targets the project root, not cwd", async () => {
   codegraphExtension(pi);
   await withPath(join(tmp, "bin"), async () => {
     const r = await tools[10].execute("id", {}, undefined, undefined, { cwd: deep });
-    expect(r.content[0].text).toBe("fake-output init " + join(tmp, "root"));
+    expect(r.content[0].text).toBe("fake-output init -- " + join(tmp, "root"));
   });
   const calls = await readCalls();
-  expect(calls[calls.length - 1]).toBe("CALL:init " + join(tmp, "root"));
+  expect(calls[calls.length - 1]).toBe("CALL:init -- " + join(tmp, "root"));
 });
 
 test("focused tools pass optional params through", async () => {
@@ -347,12 +347,12 @@ test("focused tools pass optional params through", async () => {
   });
   const calls = (await readCalls()).filter((c) => !c.includes("sync")).slice(-6);
   expect(calls).toEqual([
-    "CALL:query x --kind class",
-    "CALL:callers y --limit 7",
-    "CALL:affected f.ts --depth 3 --filter e2e/*.ts",
-    "CALL:files --pattern *.ts --format flat",
-    `CALL:init ${join(tmp, "root")} --force`,
-    "CALL:unlock /p",
+    "CALL:query --kind=class -- x",
+    "CALL:callers --limit=7 -- y",
+    "CALL:affected --depth=3 --filter=e2e/*.ts -- f.ts",
+    "CALL:files --pattern=*.ts --format=flat",
+    `CALL:init --force -- ${join(tmp, "root")}`,
+    "CALL:unlock -- /p",
   ]);
 });
 
@@ -394,7 +394,10 @@ test("CODEGRAPH_TOOLS=all activates every tool", async () => {
 test("findIndexRoot resolves a symlinked cwd to the real index", async () => {
   const link = join(tmp, "link-root");
   await symlink(join(tmp, "root"), link);
-  expect(await findIndexRoot(link)).toBe(join(tmp, "root"));
+  const result = await findIndexRoot(link);
+  // 词法链优先：link/.codegraph 经 symlink 穿透即可见，命中 link 本身；
+  // 若词法不可达则 real 链命中 root。两者都指向同一真实索引。
+  expect(result === link || result === join(tmp, "root")).toBe(true);
 });
 
 test("failed sync flags the result as possibly stale", async () => {
@@ -408,7 +411,7 @@ test("failed sync flags the result as possibly stale", async () => {
       cwd: join(tmp, "fail-root"),
     });
     expect(r.content[0].text).toContain("⚠ codegraph sync failed — blast radius may be stale.");
-    expect(r.content[0].text).toContain("fake-output explore x");
+    expect(r.content[0].text).toContain("fake-output explore -- x");
   });
 });
 
@@ -419,6 +422,40 @@ test("sync and index tools execute their commands", async () => {
     const r1 = await tools[9].execute("id", {}, undefined, undefined, { cwd: join(tmp, "root") });
     expect(r1.content[0].text).toBe("fake-output sync");
     const r2 = await tools[11].execute("id", {}, undefined, undefined, { cwd: join(tmp, "root") });
-    expect(r2.content[0].text).toBe("fake-output index " + join(tmp, "root"));
+    expect(r2.content[0].text).toBe("fake-output index -- " + join(tmp, "root"));
   });
+});
+
+test("findIndexRoot sees markers above a link component (lexical chain)", async () => {
+  const target = join(tmp, "link-target");
+  await mkdir(target, { recursive: true });
+  const linkParent = join(tmp, "linkdir");
+  await mkdir(linkParent, { recursive: true });
+  await symlink(target, join(linkParent, "proj"));
+  await mkdir(join(linkParent, ".codegraph"), { recursive: true });
+  await writeFile(join(linkParent, ".codegraph", "codegraph.db"), "");
+  expect(await findIndexRoot(join(linkParent, "proj"))).toBe(linkParent);
+});
+
+test("setup instructions quote project roots containing single quotes", () => {
+  const g = buildSetupInstructions("/repo/it's");
+  expect(g).toContain("codegraph init '/repo/it'\\''s'");
+});
+
+test("dash-leading user args are protected from CLI option parsing", async () => {
+  const { tools, pi } = stubPi();
+  codegraphExtension(pi);
+  await withPath(join(tmp, "bin"), async () => {
+    await tools[0].execute("id", { query: "--help" }, undefined, undefined, { cwd: join(tmp, "root") });
+    await tools[0].execute("id", { query: "--max-files", maxFiles: 3 }, undefined, undefined, {
+      cwd: join(tmp, "root"),
+    });
+    await tools[1].execute("id", { name: "-h" }, undefined, undefined, { cwd: join(tmp, "root") });
+  });
+  const calls = (await readCalls()).filter((c) => !c.includes("sync")).slice(-3);
+  expect(calls).toEqual([
+    "CALL:explore -- --help",
+    "CALL:explore --max-files=3 -- --max-files",
+    "CALL:node -- -h",
+  ]);
 });

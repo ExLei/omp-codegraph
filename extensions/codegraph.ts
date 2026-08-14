@@ -24,25 +24,41 @@ import { promisify } from "node:util";
 // ─── find-root: walk up looking for a marker (index / git root) ──────────────
 
 async function findRootDir(start: string, marker: string): Promise<string | null> {
-  // Resolve symlinks first: a symlinked cwd (e.g. WSL /mnt links, monorepo
-  // package links) must still walk up to the real index. Falls back to the
-  // lexical path when realpath fails.
-  let dir: string;
-  try {
-    dir = await fsp.realpath(start);
-  } catch {
-    dir = resolve(start);
+  // Walk the lexical chain first, then the symlink-resolved chain: a
+  // symlinked cwd needs the real chain (the index lives at the link
+  // target), while markers placed above a link component only exist on the
+  // lexical chain. Nearest hit wins.
+  const seen = new Set<string>();
+  const chain: string[] = [];
+  for (let dir = resolve(start); ; ) {
+    if (seen.has(dir)) break;
+    seen.add(dir);
+    chain.push(dir);
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
-  for (;;) {
+  try {
+    for (let dir = await fsp.realpath(start); ; ) {
+      if (seen.has(dir)) break;
+      seen.add(dir);
+      chain.push(dir);
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // realpath failed — lexical chain only
+  }
+  for (const dir of chain) {
     try {
       await fsp.access(join(dir, marker), fsp.constants.F_OK);
       return dir;
     } catch {
-      const parent = dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
+      // keep walking
     }
   }
+  return null;
 }
 
 /**
@@ -55,9 +71,15 @@ export function findIndexRoot(start: string): Promise<string | null> {
   return findRootDir(start, join(".codegraph", "codegraph.db"));
 }
 
-/** Nearest directory containing a `.git` entry; falls back to `start`. */
+/** Nearest directory containing a `.git` entry; falls back to the resolved `start`. */
 export async function findProjectRoot(start: string): Promise<string> {
-  return (await findRootDir(start, ".git")) ?? resolve(start);
+  const root = await findRootDir(start, ".git");
+  if (root) return root;
+  try {
+    return await fsp.realpath(start);
+  } catch {
+    return resolve(start);
+  }
 }
 
 // ─── run-codegraph: resolve + execute the CLI binary ─────────────────────────
@@ -121,6 +143,15 @@ export async function runCodegraph(
 // ─── guidance: setup instructions when no index exists ───────────────────────
 
 /**
+ * Single-quote for POSIX sh: a literal `'` becomes `'\''`, so the whole
+ * string survives `sh -c` regardless of embedded quotes or command
+ * substitution metacharacters.
+ */
+function shellQuote(p: string): string {
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Returned when no index exists. The model must initialize manually (never
  * auto-init the user's repo); the text carries the exact steps plus the
  * counter to the CLI's generic agent-guard boilerplate.
@@ -129,9 +160,9 @@ export function buildSetupInstructions(projectRoot: string): string {
   return (
     `No codegraph index exists (nearest project root: ${projectRoot}). ` +
     `Initialize it manually before querying:\n` +
-    `  1. codegraph_init tool, or bash: codegraph init '${projectRoot}'\n` +
+    `  1. codegraph_init tool, or bash: codegraph init ${shellQuote(projectRoot)}\n` +
     `     (Large repos may exceed this tool's 90s timeout — run it in a separate ` +
-    `terminal and poll with: codegraph status '${projectRoot}' until it finishes.)\n` +
+    `terminal and poll with: codegraph status ${shellQuote(projectRoot)} until it finishes.)\n` +
     `  2. ensure ".codegraph" is in ${projectRoot}/.gitignore (add it if missing)\n` +
     `  3. call codegraph_explore again with the same query.\n` +
     `(If the CLI says "indexing is the user's decision, do not run it yourself", ` +
@@ -157,7 +188,7 @@ async function withFreshIndex<T extends { content?: Array<{ type: string; text: 
 ): Promise<T> {
   let stale = false;
   try {
-    await runCodegraph(["sync", idxRoot], cwd, SYNC_TIMEOUT_MS);
+    await runCodegraph(["sync", "--", idxRoot], cwd, SYNC_TIMEOUT_MS);
   } catch {
     stale = true;
   }
@@ -258,8 +289,9 @@ export default function codegraphExtension(pi: ExtensionAPI) {
         ),
     }),
     buildArgs: (p) => {
-      const args = ["explore", String(p.query)];
-      if (p.maxFiles !== undefined) args.push("--max-files", String(p.maxFiles));
+      const args = ["explore"];
+      if (p.maxFiles !== undefined) args.push(`--max-files=${p.maxFiles}`);
+      args.push("--", String(p.query));
       return args;
     },
     postProcess: (text) => {
@@ -282,7 +314,7 @@ export default function codegraphExtension(pi: ExtensionAPI) {
         "Exact symbol name (e.g. 'runCodegraph') or a file path (repo-relative or absolute, e.g. 'extensions/codegraph.ts')"
       ),
     }),
-    buildArgs: (p) => ["node", String(p.name)],
+    buildArgs: (p) => ["node", "--", String(p.name)],
   });
 
   registerGraphTool(pi, {
@@ -302,9 +334,10 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     }),
     defaultInactive: true,
     buildArgs: (p) => {
-      const args = ["query", String(p.search)];
-      if (p.limit !== undefined) args.push("--limit", String(p.limit));
-      if (p.kind !== undefined) args.push("--kind", String(p.kind));
+      const args = ["query"];
+      if (p.limit !== undefined) args.push(`--limit=${p.limit}`);
+      if (p.kind !== undefined) args.push(`--kind=${p.kind}`);
+      args.push("--", String(p.search));
       return args;
     },
   });
@@ -320,8 +353,9 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     }),
     defaultInactive: true,
     buildArgs: (p) => {
-      const args = ["callers", String(p.symbol)];
-      if (p.limit !== undefined) args.push("--limit", String(p.limit));
+      const args = ["callers"];
+      if (p.limit !== undefined) args.push(`--limit=${p.limit}`);
+      args.push("--", String(p.symbol));
       return args;
     },
   });
@@ -337,8 +371,9 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     }),
     defaultInactive: true,
     buildArgs: (p) => {
-      const args = ["callees", String(p.symbol)];
-      if (p.limit !== undefined) args.push("--limit", String(p.limit));
+      const args = ["callees"];
+      if (p.limit !== undefined) args.push(`--limit=${p.limit}`);
+      args.push("--", String(p.symbol));
       return args;
     },
   });
@@ -354,8 +389,9 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     }),
     defaultInactive: true,
     buildArgs: (p) => {
-      const args = ["impact", String(p.symbol)];
-      if (p.depth !== undefined) args.push("--depth", String(p.depth));
+      const args = ["impact"];
+      if (p.depth !== undefined) args.push(`--depth=${p.depth}`);
+      args.push("--", String(p.symbol));
       return args;
     },
   });
@@ -376,9 +412,10 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     defaultInactive: true,
     buildArgs: (p) => {
       const args = ["affected"];
+      if (p.depth !== undefined) args.push(`--depth=${p.depth}`);
+      if (p.filter !== undefined) args.push(`--filter=${p.filter}`);
+      args.push("--");
       for (const f of (p.files as string[]) ?? []) args.push(f);
-      if (p.depth !== undefined) args.push("--depth", String(p.depth));
-      if (p.filter !== undefined) args.push("--filter", String(p.filter));
       return args;
     },
   });
@@ -396,9 +433,9 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     defaultInactive: true,
     buildArgs: (p) => {
       const args = ["files"];
-      if (p.filter !== undefined) args.push("--filter", String(p.filter));
-      if (p.pattern !== undefined) args.push("--pattern", String(p.pattern));
-      if (p.format !== undefined) args.push("--format", String(p.format));
+      if (p.filter !== undefined) args.push(`--filter=${p.filter}`);
+      if (p.pattern !== undefined) args.push(`--pattern=${p.pattern}`);
+      if (p.format !== undefined) args.push(`--format=${p.format}`);
       return args;
     },
   });
@@ -439,9 +476,8 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     resolvePath: findProjectRoot,
     buildArgs: (p, root) => {
       const args = ["init"];
-      if (p.path !== undefined) args.push(String(p.path));
-      else if (root) args.push(root);
       if (p.force === true) args.push("--force");
+      args.push("--", p.path !== undefined ? String(p.path) : (root ?? ""));
       return args;
     },
   });
@@ -459,9 +495,8 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     resolvePath: findProjectRoot,
     buildArgs: (p, root) => {
       const args = ["index"];
-      if (p.path !== undefined) args.push(String(p.path));
-      else if (root) args.push(root);
       if (p.force === true) args.push("--force");
+      args.push("--", p.path !== undefined ? String(p.path) : (root ?? ""));
       return args;
     },
   });
@@ -480,9 +515,8 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     resolvePath: findProjectRoot,
     buildArgs: (p, root) => {
       const args = ["uninit"];
-      if (p.path !== undefined) args.push(String(p.path));
-      else if (root) args.push(root);
       if (p.force === true) args.push("--force");
+      args.push("--", p.path !== undefined ? String(p.path) : (root ?? ""));
       return args;
     },
   });
@@ -499,8 +533,7 @@ export default function codegraphExtension(pi: ExtensionAPI) {
     resolvePath: findProjectRoot,
     buildArgs: (p, root) => {
       const args = ["unlock"];
-      if (p.path !== undefined) args.push(String(p.path));
-      else if (root) args.push(root);
+      args.push("--", p.path !== undefined ? String(p.path) : (root ?? ""));
       return args;
     },
   });
