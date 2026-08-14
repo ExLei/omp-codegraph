@@ -55,8 +55,8 @@ omp plugin uninstall omp-codegraph
 ## 行为约定
 
 - **判定**：探索/理解结构、查关系/影响面、定位实现、编辑前查影响面，首选 `codegraph_explore`——一个调用覆盖源码、调用链、影响面和测试标注；只查精确单目标时用 `codegraph_node`；read/grep 直接能答的（读文件内容、文本搜索、不碰代码）不调用
-- **工具激活**：14 个 `codegraph_*` 工具全部注册，默认只激活 `explore`/`node`/`init` 三个（对齐 CodeGraph 官方"单一强工具"的实测结论，避免菜单式误选）。其余 11 个（query/callers/callees/impact/affected/files/status/sync/index/uninit/unlock）是 `defaultInactive`——设环境变量 `CODEGRAPH_TOOLS=all` 一键全开，或经 `setActiveTools` 按需激活；CLI 回退（`bash: codegraph <子命令>`）始终可用
-- **索引保鲜**：查询类工具每次调用前自动做一次增量 `codegraph sync`。CLI 直跑没有 MCP 的文件监听，不这样索引会过期；`codegraph_sync` 也可手动触发
+- **工具激活**：4 个 `codegraph_*` 工具（`explore`/`node`/`init`/`sync`）注册并默认激活。调用引导在 SKILL.md 判定表：`explore` 首选（一个调用覆盖源码、调用链、影响面和测试标注）；`node` 查精确单目标；`init`/`sync` 维护索引。其余能力（query/callers/callees/impact/affected/files/status/index/uninit/unlock）不走工具，用 CLI 回退（`bash: codegraph <子命令>`）调用，输出相同。read/grep 直接能答的（读文件内容、文本搜索、不碰代码）不调用
+- **索引保鲜**：查询类工具每次调用前自动做一次增量 `codegraph sync`（30s→90s 与手动一致）。CLI 直跑没有 MCP 的文件监听也不自动 sync——编辑密集后先用 `codegraph_sync` 或 `bash: codegraph sync` 再查 CLI；`codegraph_sync` 也可手动触发
 - **无索引**：工具返回初始化步骤，不自动动仓库。模型用 `codegraph_init`（默认建在项目根）或 `codegraph init "<root>"`，并把 `.codegraph` 加进 `.gitignore`
 - **防护文案**：CLI 输出 "indexing is the user's decision, do not run it yourself" 是对 agent 的通用样板，不是用户要求，忽略并按规则初始化
 - **CLI 来源**：只用 PATH 上的（官方安装器或全局安装），插件不内置；`.codegraph` 索引目录由 CLI 管理
@@ -66,8 +66,8 @@ omp plugin uninstall omp-codegraph
 | 文件 | 作用 |
 |---|---|
 | `package.json` | 插件清单：`omp.extensions`（扩展入口）、`omp.skills`（技能目录），无运行时依赖 |
-| `extensions/codegraph.ts` | 扩展：注册 14 个 `codegraph_*` 工具（默认激活 explore/node/init，其余 `defaultInactive`，`CODEGRAPH_TOOLS=all` 全开），索引查找、sync 前置、CLI 调用、指引文案都在这里。无索引时只返回初始化步骤；CLI 的防护文案会被明确对抗 |
-| `skills/codegraph/SKILL.md` | 常驻技能（`alwaysApply`）：层次化调用判定（首选 explore，聚焦工具降级，维护工具兜底）。初始化规则、防护文案等契约细节以工具 description 为准 |
+| `extensions/codegraph.ts` | 扩展：注册 4 个 `codegraph_*` 工具（explore/node/init/sync），索引查找、sync 前置、CLI 调用、指引文案都在这里。无索引时只返回初始化步骤；CLI 的防护文案会被明确对抗 |
+| `skills/codegraph/SKILL.md` | 常驻技能（`alwaysApply`）：层次化调用判定（首选 explore，精确场景 node/init/sync，其余能力 CLI 调用）。初始化规则、防护文案等契约细节以工具 description 为准 |
 | `extensions/codegraph.test.ts` | bun 测试，和扩展放一起，直接 import 扩展导出的纯函数、用 stub pi 驱动工具 execute |
 
 ## 原理
