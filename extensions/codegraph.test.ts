@@ -2,11 +2,12 @@ import { test, expect, afterAll } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import codegraphExtension, {
   buildSetupInstructions,
   findIndexRoot,
   findProjectRoot,
-  resolveCodegraphBinary,
+  resolveCodegraphCommand,
   runCodegraph,
 } from "./codegraph.js";
 
@@ -19,19 +20,47 @@ await mkdir(join(tmp, "root", "sub", "deeper"), { recursive: true });
 await mkdir(join(tmp, "other"), { recursive: true });
 const deep = join(tmp, "root", "sub", "deeper");
 
-// PATH-installed CLI stub (official-installer style); every call is logged
-// to $CG_LOG so adapter tests can assert the call sequence. Uses only sh
-// built-ins — adapter tests replace PATH with a bare dir, so external
-// commands like grep would be unfindable.
+// Cross-platform CLI stub; every call is logged to $CG_LOG so adapter tests
+// can assert the call sequence. Windows gets a standard cmd launcher that the
+// extension resolves to Bun + the JS entry without executing cmd.exe.
 const callLog = join(tmp, "calls.log");
+const savedCallLog = process.env.CG_LOG;
 process.env.CG_LOG = callLog;
 await mkdir(join(tmp, "bin"), { recursive: true });
-const binCli = join(tmp, "bin", "codegraph");
+const stubCli = join(tmp, "bin", "codegraph.js");
 await writeFile(
-  binCli,
-  "#!/bin/sh\nif [ -n \"$CG_LOG\" ]; then echo \"CALL:$*\" >> \"$CG_LOG\"; fi\ncase \"$*\" in\n  *fail*)\n    echo \"boom-stderr\" >&2\n    exit 1\n    ;;\n  *empty*)\n    echo \"No relevant code found for empty\"\n    exit 0\n    ;;\nesac\necho \"fake-output $*\"\n",
-  { mode: 0o755 },
+  stubCli,
+  `const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (process.env.CG_LOG) appendFileSync(process.env.CG_LOG, "CALL:" + args.join(" ") + "\\n");
+if (args.some((arg) => arg.includes("fail"))) {
+  console.log("boom-stdout");
+  console.error("boom-stderr");
+  process.exitCode = 1;
+} else if (args.includes("empty")) {
+  console.log("No relevant code found for empty");
+} else if (args.includes("both")) {
+  console.log("stdout-line");
+  console.error("stderr-line");
+} else if (args.includes("wait")) {
+  setTimeout(() => console.log("waited"), 5_000);
+} else {
+  console.log("fake-output " + args.join(" "));
+}
+`,
 );
+
+const binCli = join(tmp, "bin", process.platform === "win32" ? "codegraph.cmd" : "codegraph");
+if (process.platform === "win32") {
+  await writeFile(binCli, `@"${process.execPath}" "${stubCli}" %*\n`);
+} else {
+  await writeFile(
+    binCli,
+    "#!/bin/sh\nexec \"" + process.execPath + "\" \"" + stubCli + "\" \"$@\"\n",
+    { mode: 0o755 },
+  );
+}
+const directStubCommand = { file: process.execPath, prefixArgs: [stubCli] };
 
 async function readCalls(): Promise<string[]> {
   try {
@@ -42,10 +71,22 @@ async function readCalls(): Promise<string[]> {
   }
 }
 
-// Minimal pi stub: captures registered tools for direct execute() calls.
-// `pi` is typed `any` — the real ExtensionAPI has ~30 members we don't use.
+interface StubTool {
+  name: string;
+  execute(
+    id: string,
+    params: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    onUpdate: unknown,
+    ctx: { cwd: string },
+  ): Promise<{ content: Array<{ type: "text"; text: string }> }>;
+}
+
+// Minimal pi stub: captures registered tools for direct execute() calls. The
+// final cast deliberately bridges the many ExtensionAPI members these tests do
+// not exercise while keeping the captured tool surface strongly typed.
 function stubPi() {
-  const tools: Array<{ name: string; execute: Function }> = [];
+  const tools: StubTool[] = [];
   const z = {
     object: (shape: unknown) => ({ shape }),
     string: () => ({
@@ -56,13 +97,13 @@ function stubPi() {
     array: () => ({ optional: () => ({ describe: () => ({}) }) }),
     boolean: () => ({ optional: () => ({ describe: () => ({}) }) }),
   };
-  const pi: any = {
+  const pi = {
     zod: { z },
     setLabel: () => {},
-    registerTool: (t: { name: string; execute: Function }) => {
+    registerTool: (t: StubTool) => {
       tools.push(t);
     },
-  };
+  } as unknown as ExtensionAPI;
   return { tools, pi };
 }
 
@@ -76,7 +117,11 @@ async function withPath(pathValue: string, fn: () => void | Promise<void>): Prom
   }
 }
 
-afterAll(() => rm(tmp, { recursive: true, force: true }));
+afterAll(async () => {
+  if (savedCallLog === undefined) delete process.env.CG_LOG;
+  else process.env.CG_LOG = savedCallLog;
+  await rm(tmp, { recursive: true, force: true });
+});
 
 // ── find-root ────────────────────────────────────────────────────────────────
 
@@ -96,6 +141,11 @@ test("findIndexRoot ignores a bare .codegraph dir (CLI telemetry false positive)
   expect(await findIndexRoot(join(tmp, "tel"))).toBeNull();
 });
 
+test("findIndexRoot requires codegraph.db to be a file", async () => {
+  await mkdir(join(tmp, "invalid-index", ".codegraph", "codegraph.db"), { recursive: true });
+  expect(await findIndexRoot(join(tmp, "invalid-index"))).toBeNull();
+});
+
 test("findProjectRoot walks up to the .git entry", async () => {
   expect(await findProjectRoot(deep)).toBe(join(tmp, "root"));
 });
@@ -106,41 +156,87 @@ test("findProjectRoot falls back to the resolved start when no .git exists", asy
 
 // ── run-codegraph ────────────────────────────────────────────────────────────
 
-test("resolveCodegraphBinary finds the CLI on PATH", async () => {
+test("resolveCodegraphCommand finds the CLI on PATH", async () => {
   await withPath(join(tmp, "bin"), () => {
-    expect(resolveCodegraphBinary()).toBe(binCli);
+    expect(resolveCodegraphCommand()).toEqual(
+      process.platform === "win32"
+        ? directStubCommand
+        : { file: binCli, prefixArgs: [] },
+    );
   });
 });
 
-test("resolveCodegraphBinary returns the bare name when PATH has none", () => {
-  withPath(join(tmp, "empty"), () => {
-    expect(resolveCodegraphBinary()).toBe("codegraph");
+test("resolveCodegraphCommand returns the bare name when PATH has none", async () => {
+  await withPath(join(tmp, "empty"), () => {
+    expect(resolveCodegraphCommand()).toEqual({ file: "codegraph", prefixArgs: [] });
+  });
+});
+
+test("resolveCodegraphCommand safely follows nested Windows cmd shims", async () => {
+  if (process.platform !== "win32") return;
+  const shimDir = join(tmp, "nested-bin");
+  const runtimeDir = join(tmp, "runtime", "bin");
+  await mkdir(shimDir, { recursive: true });
+  await mkdir(runtimeDir, { recursive: true });
+  const innerShim = join(runtimeDir, "codegraph.cmd");
+  await writeFile(innerShim, `@"${process.execPath}" --smol "${stubCli}" %*\n`);
+  await writeFile(join(shimDir, "codegraph.cmd"), `@"${innerShim}" %*\n`);
+
+  await withPath(shimDir, () => {
+    expect(resolveCodegraphCommand()).toEqual({
+      file: process.execPath,
+      prefixArgs: ["--smol", stubCli],
+    });
+  });
+});
+
+test("resolveCodegraphCommand rejects unknown Windows cmd shim formats", async () => {
+  if (process.platform !== "win32") return;
+  const shimDir = join(tmp, "unsupported-bin");
+  await mkdir(shimDir, { recursive: true });
+  await writeFile(join(shimDir, "codegraph.cmd"), "@echo unsupported %*\n");
+  await withPath(shimDir, () => {
+    expect(() => resolveCodegraphCommand()).toThrow(/could not be resolved safely/);
   });
 });
 
 test("runCodegraph returns trimmed combined output on success", async () => {
-  expect(await runCodegraph(["explore", "hello world"], "/tmp", 90_000, binCli)).toBe(
+  expect(await runCodegraph(["explore", "hello world"], tmp, { command: directStubCommand })).toBe(
     "fake-output explore hello world",
   );
 });
 
-test("runCodegraph rethrows with captured stderr embedded", async () => {
-  // bun:test `.rejects` matchers return void (bun-types) and the runner tracks
-  // the assertion internally — `await` is a no-op here (TS 80007).
-  expect(runCodegraph(["explore", "fail"], "/tmp", 90_000, binCli)).rejects.toThrow(/boom-stderr/);
+test("runCodegraph preserves stdout and stderr on success", async () => {
+  const out = await runCodegraph(["explore", "both"], tmp, { command: directStubCommand });
+  expect(out).toContain("stdout-line");
+  expect(out).toContain("stderr-line");
+});
+
+test("runCodegraph rethrows with captured stdout and stderr embedded", async () => {
+  const call = runCodegraph(["explore", "fail"], tmp, { command: directStubCommand });
+  await expect(call).rejects.toThrow(/boom-stdout[\s\S]*boom-stderr/);
 });
 
 test("runCodegraph passes shell metacharacters as literal args (no injection)", async () => {
   // A shell would interpret `; echo PWNED`; argv passing must not.
-  const out = await runCodegraph(["explore", "a; echo PWNED & whoami"], "/tmp", 90_000, binCli);
+  const out = await runCodegraph(["explore", "a; echo PWNED & whoami"], tmp, {
+    command: directStubCommand,
+  });
   expect(out).toContain("a; echo PWNED & whoami");
   expect(out).not.toContain("PWNED\n");
 });
 
 test("runCodegraph resolves from PATH when no binary is injected", async () => {
   await withPath(join(tmp, "bin"), async () => {
-    expect(await runCodegraph(["explore", "x"], "/tmp")).toBe("fake-output explore x");
+    expect(await runCodegraph(["explore", "x"], tmp)).toBe("fake-output explore x");
   });
+});
+
+test("runCodegraph honors cancellation", async () => {
+  const controller = new AbortController();
+  const call = runCodegraph(["wait"], tmp, { command: directStubCommand, signal: controller.signal });
+  setTimeout(() => controller.abort(), 20);
+  await expect(call).rejects.toThrow();
 });
 
 // ── guidance ─────────────────────────────────────────────────────────────────

@@ -113,7 +113,17 @@ SKILL.md 的 `metadata.version` 与包版本保持同步。
 **CLI 来源**
 
 - 插件只认 PATH 上的 CLI。官方安装器和全局安装都行。
+- Windows 上的标准 `codegraph.cmd`（npm/Scoop 启动器）会解析为底层 Node + JS 入口后直接执行；未知格式会拒绝执行，不经过 `cmd.exe`。
 - `.codegraph` 索引目录由 CLI 管理。
+
+## 开发校验
+
+```bash
+bun install --frozen-lockfile
+bun run check
+```
+
+`check` 会依次运行严格 TypeScript 类型检查和完整 Bun 测试。
 
 ## 组成
 
@@ -127,5 +137,6 @@ SKILL.md 的 `metadata.version` 与包版本保持同步。
 ## 原理
 
 - 插件不携带 CLI。扩展只查 PATH。用户自选版本和安装方式。
-- 扩展用 `shell: false` 直接执行二进制，参数走 argv。不经 shell，就没有命令注入面。
+- 扩展用 `shell: false` 直接执行二进制，参数走 argv；Windows 启动器也先解析为直接命令，不把查询文本交给 shell。
+- 工具取消信号会传给同步和查询子进程，取消后不会继续执行查询。
 - 单仓库 + git 依赖安装实现原子发布。技能、扩展、依赖一起更新，无需版本一致性 gate。

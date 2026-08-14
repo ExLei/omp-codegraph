@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { execFile } from "node:child_process";
-import { existsSync, promises as fsp } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { accessSync, constants, promises as fsp, readFileSync, statSync } from "node:fs";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 /**
@@ -24,7 +24,11 @@ import { promisify } from "node:util";
 
 // ─── find-root: walk up looking for a marker (index / git root) ──────────────
 
-async function findRootDir(start: string, marker: string): Promise<string | null> {
+async function findRootDir(
+  start: string,
+  marker: string,
+  markerType: "entry" | "file" = "entry",
+): Promise<string | null> {
   // Walk the lexical chain first, then the symlink-resolved chain: a
   // symlinked cwd needs the real chain (the index lives at the link
   // target), while markers placed above a link component only exist on the
@@ -53,8 +57,8 @@ async function findRootDir(start: string, marker: string): Promise<string | null
   }
   for (const dir of chain) {
     try {
-      await fsp.access(join(dir, marker), fsp.constants.F_OK);
-      return dir;
+      const stat = await fsp.stat(join(dir, marker));
+      if (markerType === "entry" || stat.isFile()) return dir;
     } catch {
       // keep walking
     }
@@ -69,7 +73,7 @@ async function findRootDir(start: string, marker: string): Promise<string | null
  * positive (the CLI itself rejects it — it only counts a real `codegraph.db`).
  */
 export function findIndexRoot(start: string): Promise<string | null> {
-  return findRootDir(start, join(".codegraph", "codegraph.db"));
+  return findRootDir(start, join(".codegraph", "codegraph.db"), "file");
 }
 
 /** Nearest directory containing a `.git` entry; falls back to the resolved `start`. */
@@ -87,16 +91,123 @@ export async function findProjectRoot(start: string): Promise<string> {
 
 const execFileP = promisify(execFile);
 const MAX_BUFFER = 64 * 1024 * 1024;
+const WINDOWS_SHIM_MAX_DEPTH = 5;
+
+export interface CodegraphCommand {
+  file: string;
+  prefixArgs: string[];
+}
+
+export interface RunCodegraphOptions {
+  timeoutMs?: number;
+  command?: CodegraphCommand | string;
+  signal?: AbortSignal;
+}
+
+function pathEntries(): string[] {
+  return (process.env.PATH ?? "")
+    .split(delimiter)
+    .map((entry) =>
+      entry.length >= 2 && entry.startsWith('"') && entry.endsWith('"') ? entry.slice(1, -1) : entry,
+    )
+    .filter((entry) => entry.length > 0);
+}
+
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isExecutableFile(path: string): boolean {
+  if (!isRegularFile(path)) return false;
+  if (process.platform === "win32") return true;
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findExecutableOnPath(binName: string): string | null {
+  for (const dir of pathEntries()) {
+    const candidate = join(dir, binName);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function expandShimDirectory(text: string, shimPath: string): string {
+  const base = dirname(shimPath) + sep;
+  return text.replace(/%~dp0/gi, () => base).replace(/%dp0%/gi, () => base);
+}
+
+function resolveShimExecutable(token: string, shimPath: string): string | null {
+  if (/^%_prog%$/i.test(token)) {
+    const localNode = join(dirname(shimPath), "node.exe");
+    return isExecutableFile(localNode) ? localNode : findExecutableOnPath("node.exe");
+  }
+  if (token.includes("%")) return null;
+  const candidate = resolve(dirname(shimPath), token);
+  if (isExecutableFile(candidate)) return candidate;
+  if (/^node(?:\.exe)?$/i.test(token)) return findExecutableOnPath("node.exe");
+  return null;
+}
 
 /**
- * First match for `binName` across PATH entries, or null. win32 accepts
- * `.exe` only — `.cmd` would need a shell (a command-injection surface).
+ * Resolve standard npm/Scoop `codegraph.cmd` launchers to the underlying
+ * executable and JS entry point. We never execute the cmd file itself: doing
+ * so would route user-controlled queries through cmd.exe and reintroduce shell
+ * metacharacter injection. Unknown launcher shapes are rejected instead.
  */
-function findOnPath(binName: string): string | null {
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    const candidate = join(dir, binName);
-    if (existsSync(candidate)) return candidate;
+function resolveWindowsShim(
+  shimPath: string,
+  seen = new Set<string>(),
+  depth = 0,
+): CodegraphCommand | null {
+  const normalized = resolve(shimPath);
+  if (depth >= WINDOWS_SHIM_MAX_DEPTH || seen.has(normalized) || !isRegularFile(normalized)) return null;
+  seen.add(normalized);
+
+  let text: string;
+  try {
+    text = expandShimDirectory(readFileSync(normalized, "utf8"), normalized);
+  } catch {
+    return null;
+  }
+
+  for (const line of text.split(/\r?\n/).reverse()) {
+    if (!line.includes("%*")) continue;
+
+    const entry = /"([^"\r\n]*[\\/]codegraph\.js)"\s*%\*/i.exec(line);
+    if (entry?.index !== undefined) {
+      const entryPath = resolve(dirname(normalized), entry[1]);
+      if (!isRegularFile(entryPath)) continue;
+
+      const beforeEntry = line.slice(0, entry.index);
+      const quotedTokens = [...beforeEntry.matchAll(/"([^"]+)"/g)];
+      const executableToken = quotedTokens.at(-1);
+      if (executableToken?.index === undefined) continue;
+
+      const executable = resolveShimExecutable(executableToken[1], normalized);
+      if (!executable) continue;
+      const flags = beforeEntry
+        .slice(executableToken.index + executableToken[0].length)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      return { file: executable, prefixArgs: [...flags, entryPath] };
+    }
+
+    const nested = /"([^"\r\n]*codegraph\.cmd)"\s*%\*/i.exec(line);
+    if (nested) {
+      const target = resolve(dirname(normalized), nested[1]);
+      const command = resolveWindowsShim(target, seen, depth + 1);
+      if (command) return command;
+    }
   }
   return null;
 }
@@ -104,11 +215,39 @@ function findOnPath(binName: string): string | null {
 /**
  * Resolve the codegraph CLI from PATH — the plugin does not bundle one; the
  * user's own install (official self-contained installer, `bun add -g`, npm
- * global) is the only source. Returns the found path, or the bare name so
- * execFile surfaces a clear missing-binary error.
+ * global) is the only source. On Windows, standard cmd shims are resolved to
+ * their direct Node/JS command so query text never passes through a shell.
  */
-export function resolveCodegraphBinary(): string {
-  return findOnPath(process.platform === "win32" ? "codegraph.exe" : "codegraph") ?? "codegraph";
+export function resolveCodegraphCommand(): CodegraphCommand {
+  if (process.platform !== "win32") {
+    return { file: findExecutableOnPath("codegraph") ?? "codegraph", prefixArgs: [] };
+  }
+
+  let unsupportedShim: string | null = null;
+  for (const dir of pathEntries()) {
+    const executable = join(dir, "codegraph.exe");
+    if (isExecutableFile(executable)) return { file: executable, prefixArgs: [] };
+
+    const shim = join(dir, "codegraph.cmd");
+    if (!isRegularFile(shim)) continue;
+    const command = resolveWindowsShim(shim);
+    if (command) return command;
+    unsupportedShim ??= shim;
+  }
+  if (unsupportedShim) {
+    throw new Error(
+      `Found ${unsupportedShim}, but its launcher format could not be resolved safely without cmd.exe. ` +
+        "Reinstall codegraph with the official installer, bun, or npm.",
+    );
+  }
+  return { file: "codegraph", prefixArgs: [] };
+}
+
+function combinedOutput(stdout: unknown, stderr: unknown): string {
+  return [stdout, stderr]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 /**
@@ -116,28 +255,37 @@ export function resolveCodegraphBinary(): string {
  * directly, no shell anywhere (`shell: true` would concatenate unsanitized
  * query args into a shell command line — a command-injection surface). Errors
  * are re-thrown with the captured output embedded so the model sees why the
- * call failed. `binary` defaults to `resolveCodegraphBinary()`; injectable
- * for tests.
+ * call failed. The resolved command and AbortSignal are injectable for tests
+ * and cancellation-aware tool execution.
  */
 export async function runCodegraph(
   args: string[],
   cwd: string,
-  timeoutMs = 90_000,
-  binary: string = resolveCodegraphBinary(),
+  options: RunCodegraphOptions = {},
 ): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 90_000;
+  const resolvedCommand = options.command ?? resolveCodegraphCommand();
+  const command =
+    typeof resolvedCommand === "string"
+      ? { file: resolvedCommand, prefixArgs: [] }
+      : resolvedCommand;
   try {
-    const { stdout, stderr } = await execFileP(binary, args, {
+    const { stdout, stderr } = await execFileP(command.file, [...command.prefixArgs, ...args], {
       cwd,
       timeout: timeoutMs,
       maxBuffer: MAX_BUFFER,
       shell: false,
+      signal: options.signal,
     });
-    return (stdout || stderr).trim();
+    return combinedOutput(stdout, stderr);
   } catch (e: unknown) {
     // execFile errors carry stdout/stderr fields not typed on Error
-    const err = e as { stdout?: string; stderr?: string; message?: string };
-    const detail = err.stdout || err.stderr || err.message || String(e);
-    throw new Error(`codegraph ${args.join(" ")} failed: ${String(detail).slice(0, 3000)}`);
+    const err = e as { stdout?: unknown; stderr?: unknown; message?: string; name?: string };
+    const detail = combinedOutput(err.stdout, err.stderr) || err.message || String(e);
+    const renderedArgs = args.map((arg) => JSON.stringify(arg)).join(" ");
+    const error = new Error(`codegraph ${renderedArgs} failed: ${detail.slice(0, 3000)}`, { cause: e });
+    if (err.name) error.name = err.name;
+    throw error;
   }
 }
 
@@ -185,12 +333,14 @@ const SYNC_TIMEOUT_MS = 90_000; // same contract as manual sync (runCodegraph de
 async function withFreshIndex<T extends { content?: Array<{ type: string; text: string }> }>(
   idxRoot: string,
   cwd: string,
+  signal: AbortSignal | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
   let stale: string | null = null;
   try {
-    await runCodegraph(["sync", "--", idxRoot], cwd, SYNC_TIMEOUT_MS);
+    await runCodegraph(["sync", "--", idxRoot], cwd, { timeoutMs: SYNC_TIMEOUT_MS, signal });
   } catch (e) {
+    if (signal?.aborted) throw e;
     stale = String((e as Error)?.message ?? e);
   }
   const result = await run();
@@ -213,7 +363,7 @@ interface GraphToolSpec {
   name: string;
   label: string;
   description: string;
-  parameters: any; // zod object schema from pi.zod
+  parameters: Parameters<ExtensionAPI["registerTool"]>[0]["parameters"];
   buildArgs: (params: Record<string, unknown>, defaultPath?: string) => string[];
   sync?: boolean; // incremental sync before each call (default true)
   allowNoIndex?: boolean; // run even without an index (default false)
@@ -235,7 +385,7 @@ function registerGraphTool(pi: ExtensionAPI, spec: GraphToolSpec): void {
     async execute(
       _id: string,
       params: Record<string, unknown>,
-      _signal: unknown,
+      signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: { cwd: string }
     ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
@@ -248,12 +398,12 @@ function registerGraphTool(pi: ExtensionAPI, spec: GraphToolSpec): void {
       const defaultPath = spec.resolvePath ? await spec.resolvePath(ctx.cwd) : undefined;
       const args = spec.buildArgs(params, defaultPath);
       const run = async (): Promise<{ content: Array<{ type: "text"; text: string }> }> => {
-        const text = await runCodegraph(args, ctx.cwd);
+        const text = await runCodegraph(args, ctx.cwd, { signal });
         const out = spec.postProcess ? spec.postProcess(text) : text || "(empty output)";
         return { content: [{ type: "text", text: out }] };
       };
-      if (spec.sync === false) return run();
-      return withFreshIndex(idxRoot as string, ctx.cwd, run);
+      if (spec.sync === false || !idxRoot) return run();
+      return withFreshIndex(idxRoot, ctx.cwd, signal, run);
     },
   });
 }
