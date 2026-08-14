@@ -1,6 +1,6 @@
 {
   "name": "omp-codegraph",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "CodeGraph 集成：oh-my-pi 插件（扩展 + 技能），CLI 由用户外挂在 PATH 上。",
   "private": true,
   "scripts": {
@@ -13,5 +13,8 @@
     "skills": [
       "skills/codegraph"
     ]
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "^17.3.3"
   }
 }
